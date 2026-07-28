@@ -91,7 +91,7 @@ public class FleetWebSocketHandler extends TextWebSocketHandler {
 
             // Construct full frame payload
             Map<String, Object> frame = new HashMap<>();
-            frame.type = "FLEET_SNAPSHOT";
+            frame.put("type", "FLEET_SNAPSHOT");
             frame.put("vehicles", vehiclesPayload);
 
             MonitorTelemetry telemetry = new MonitorTelemetry(
