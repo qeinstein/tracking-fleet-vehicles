@@ -198,7 +198,12 @@ A multi-threaded `ScheduledExecutorService` (16 threads) updates vehicle vectors
 }
 ```
 
+### Scheduled Keep-Alive Task
+- **PingScheduler:** Background `@Scheduled(fixedRate = 30000)` task sending self-pings every 30 seconds to `https://tracking-fleet-vehicles.onrender.com/api/fleet/health` to keep Render free tier instances active and prevent sleep timeouts.
+
 ### REST Endpoints
+- `GET /` & `GET /health`: Root service status check (`200 OK`).
+- `GET /api/fleet/health`: Health status endpoint with active monitor metrics.
 - `GET /api/fleet/vehicles`: Retrieve current deep-copied vehicle map snapshot.
 - `GET /api/fleet/telemetry`: Retrieve monitor lock latency and throughput metrics.
 - `POST /api/fleet/simulation/reset`: Reseed and reset vehicle positions.

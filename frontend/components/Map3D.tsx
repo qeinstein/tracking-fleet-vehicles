@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from "react";
 import DeckGL from "@deck.gl/react";
-import { Map } from "maplibre-gl";
+import Map from "react-map-gl/maplibre";
 import { IconLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { SimpleMeshLayer } from "@deck.gl/mesh-layers";
 import { ConeGeometry, CubeGeometry } from "@luma.gl/engine";
