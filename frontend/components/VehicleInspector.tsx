@@ -44,7 +44,13 @@ export default function VehicleInspector({
   const isMoving = vehicle.status === "moving";
 
   return (
-    <div className="absolute top-24 right-4 z-20 w-80 panel rounded-2xl shadow-panel-lg p-4 animate-slide-up">
+    <div
+      className="fixed inset-x-0 bottom-0 z-30 panel shadow-panel-lg p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] rounded-t-3xl animate-slide-up
+        sm:absolute sm:inset-x-auto sm:bottom-auto sm:top-24 sm:right-4 sm:z-20 sm:w-80 sm:rounded-2xl sm:pb-4"
+    >
+      {/* Mobile drag-handle affordance for the bottom sheet. */}
+      <div className="sm:hidden mx-auto mb-2 h-1 w-10 rounded-full bg-slate-300" />
+
       <div className="flex items-center justify-between border-b border-slate-200/80 pb-3">
         <div>
           <h3 className="text-sm font-semibold text-slate-900 font-mono">{vehicle.id}</h3>
