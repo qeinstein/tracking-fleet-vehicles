@@ -1,10 +1,14 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import DeckGL from "@deck.gl/react";
-import Map from "react-map-gl/maplibre";
-import { IconLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { Map } from "react-map-gl/maplibre";
+import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { SimpleMeshLayer } from "@deck.gl/mesh-layers";
+import { AmbientLight, DirectionalLight, LightingEffect } from "@deck.gl/core";
 import { VehiclePoint } from "../lib/useFleetWebSocket";
+import { CAR_MESH, paintForId } from "../lib/carMesh";
+import { LAGOS_BOUNDS, LAGOS_CENTER } from "../lib/districts";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 interface Map3DProps {
@@ -17,60 +21,67 @@ interface Map3DProps {
   hubFilter: string;
 }
 
-// Hub color mappings
-const HUB_COLORS: Record<string, [number, number, number]> = {
-  Lagos: [6, 182, 212],      // Cyan
-  Abuja: [16, 185, 129],     // Emerald
-  Kano: [245, 158, 11],      // Amber
-  "Port Harcourt": [168, 85, 247], // Purple
-  Ibadan: [236, 72, 153],     // Pink
-  Default: [148, 163, 184],  // Slate
+// A Google-Maps-like vector basemap (light street map with roads, POIs and building data).
+// Overridable via env in case a different tile provider is preferred.
+const MAP_STYLE =
+  process.env.NEXT_PUBLIC_MAP_STYLE || "https://tiles.openfreemap.org/styles/liberty";
+
+const INITIAL_VIEW = {
+  longitude: LAGOS_CENTER[0],
+  latitude: LAGOS_CENTER[1],
+  zoom: 12.9,
+  pitch: 52,
+  bearing: -18,
+  minZoom: 10.4,
+  maxZoom: 19,
+  maxPitch: 70,
 };
 
-// Nigeria Geographical Boundary Limits
-const NIGERIA_BOUNDS = {
-  minLongitude: 2.5,
-  maxLongitude: 14.8,
-  minLatitude: 4.0,
-  maxLatitude: 14.2,
-};
+const CAR_MODEL_LENGTH_M = 4.6;
+const CAR_TARGET_PX = 26; // keep cars a readable, roughly-constant size across zoom levels
 
-const NIGERIA_INITIAL_VIEW = {
-  longitude: 8.6753,
-  latitude: 9.0820,
-  zoom: 6.2,
-  pitch: 45,
-  bearing: -10,
-  maxPitch: 75,
-  minZoom: 5.8,
-  maxZoom: 18,
-};
+// deck.gl SimpleMeshLayer sizes meshes in metres, so a fixed size looks tiny when zoomed out
+// and huge when zoomed in. Derive a per-zoom sizeScale that holds the on-screen size steady.
+function carSizeScaleFor(zoom: number): number {
+  const metersPerPixel = (156543.03392 * Math.cos((LAGOS_CENTER[1] * Math.PI) / 180)) / Math.pow(2, zoom);
+  return Math.max(6, (CAR_TARGET_PX * metersPerPixel) / CAR_MODEL_LENGTH_M);
+}
 
-// Top-down sleek Car SVG Icon Atlas (Google Maps / Uber style)
-const CAR_ICON_SVG = `data:image/svg+xml;utf8,${encodeURIComponent(`
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <g>
-    <!-- Car Outer Chassis Body -->
-    <path d="M 22 6 C 16 6 14 12 14 18 L 14 46 C 14 52 16 58 22 58 L 42 58 C 48 58 50 52 50 46 L 50 18 C 50 12 48 6 42 6 Z" fill="#0f172a" stroke="#ffffff" stroke-width="3"/>
-    <!-- Roof Cabin / Glass -->
-    <path d="M 20 22 C 20 16 24 14 32 14 C 40 14 44 16 44 22 L 42 42 C 42 46 38 48 32 48 C 26 48 22 46 22 42 Z" fill="#1e293b"/>
-    <!-- Front Windshield -->
-    <path d="M 22 20 Q 32 16 42 20 L 40 27 Q 32 24 24 27 Z" fill="#38bdf8"/>
-    <!-- Rear Windshield -->
-    <path d="M 23 41 Q 32 43 41 41 L 40 45 Q 32 47 24 45 Z" fill="#38bdf8"/>
-    <!-- Front Headlights (Yellow glow) -->
-    <ellipse cx="18" cy="8" rx="3" ry="2" fill="#fef08a"/>
-    <ellipse cx="46" cy="8" rx="3" ry="2" fill="#fef08a"/>
-    <!-- Rear Taillights (Red glow) -->
-    <rect x="17" y="55" width="6" height="2.5" rx="1" fill="#ef4444"/>
-    <rect x="41" y="55" width="6" height="2.5" rx="1" fill="#ef4444"/>
-  </g>
-</svg>
-`)}`;
+const lighting = new LightingEffect({
+  ambient: new AmbientLight({ color: [255, 255, 255], intensity: 1.5 }),
+  sun: new DirectionalLight({ color: [255, 255, 255], intensity: 2.1, direction: [-1, -3, -1] }),
+  fill: new DirectionalLight({ color: [255, 255, 255], intensity: 0.7, direction: [2, 1, -1] }),
+});
 
-const CAR_ICON_MAPPING = {
-  car: { x: 0, y: 0, width: 64, height: 64, mask: false },
-};
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+// Add extruded 3D buildings to the MapLibre basemap for a realistic street-level look.
+function addBuildings(map: any) {
+  try {
+    if (!map || map.getLayer("fleet-3d-buildings")) return;
+    if (!map.getSource("openmaptiles")) return;
+    const layers = map.getStyle().layers || [];
+    const firstSymbol = layers.find((l: any) => l.type === "symbol")?.id;
+    map.addLayer(
+      {
+        id: "fleet-3d-buildings",
+        source: "openmaptiles",
+        "source-layer": "building",
+        type: "fill-extrusion",
+        minzoom: 13,
+        paint: {
+          "fill-extrusion-color": "#e4e2da",
+          "fill-extrusion-height": ["coalesce", ["get", "render_height"], ["get", "height"], 8],
+          "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], ["get", "min_height"], 0],
+          "fill-extrusion-opacity": 0.9,
+        },
+      },
+      firstSymbol
+    );
+  } catch (e) {
+    // basemap schema differs — skip 3D buildings gracefully
+  }
+}
 
 export default function Map3D({
   vehicles,
@@ -81,148 +92,113 @@ export default function Map3D({
   viewMode3D,
   hubFilter,
 }: Map3DProps) {
-  const [viewState, setViewState] = useState(NIGERIA_INITIAL_VIEW);
+  const [viewState, setViewState] = useState<any>(INITIAL_VIEW);
 
-  // Filter vehicles by selected hub
   const filteredVehicles = useMemo(() => {
     if (hubFilter === "ALL") return vehicles;
     return vehicles.filter((v) => v.hub === hubFilter);
   }, [vehicles, hubFilter]);
 
-  // Handle Follow Mode: smoothly update camera center to match selected vehicle
+  // Follow mode: keep the camera centred on the selected vehicle.
   useEffect(() => {
     if (isFollowMode && selectedVehicleId) {
-      const targetVehicle = vehicles.find((v) => v.id === selectedVehicleId);
-      if (targetVehicle) {
-        setViewState((prev) => ({
+      const target = vehicles.find((v) => v.id === selectedVehicleId);
+      if (target) {
+        setViewState((prev: any) => ({
           ...prev,
-          longitude: targetVehicle.lon,
-          latitude: targetVehicle.lat,
-          zoom: Math.max(13, prev.zoom),
+          longitude: target.lon,
+          latitude: target.lat,
+          zoom: Math.max(15, prev.zoom),
         }));
       }
     }
   }, [isFollowMode, selectedVehicleId, vehicles]);
 
-  // Selected vehicle trail path
   const trailPaths = useMemo(() => {
     if (!selectedVehicleId) return [];
     const history = getVehicleHistory(selectedVehicleId);
     if (history.length < 2) return [];
-    return [
-      {
-        id: selectedVehicleId,
-        path: history,
-        color: [6, 182, 212, 220] as [number, number, number, number],
-      },
-    ];
-  }, [selectedVehicleId, getVehicleHistory]);
+    return [{ path: history }];
+  }, [selectedVehicleId, getVehicleHistory, vehicles]);
 
-  // Deck.gl Layers
   const layers = [
-    // Trailing movement path line
     new PathLayer({
-      id: "vehicle-trail-layer",
+      id: "trail",
       data: trailPaths,
-      getPath: (d) => d.path,
-      getColor: (d) => d.color,
-      getWidth: 4,
+      getPath: (d: any) => d.path,
+      getColor: [79, 70, 229, 200],
+      getWidth: 6,
       widthMinPixels: 3,
+      widthMaxPixels: 8,
       jointRounded: true,
       capRounded: true,
     }),
-
-    // Ground glow indicator rings under active vehicles
     new ScatterplotLayer({
-      id: "vehicle-glow-rings",
-      data: filteredVehicles,
+      id: "selection-ring",
+      data: selectedVehicleId ? filteredVehicles.filter((v) => v.id === selectedVehicleId) : [],
       getPosition: (d: VehiclePoint) => [d.lon, d.lat, 0],
-      getRadius: (d: VehiclePoint) => (d.id === selectedVehicleId ? 500 : 150),
-      radiusMinPixels: 10,
-      radiusMaxPixels: 36,
+      getRadius: 26,
+      radiusUnits: "meters",
+      radiusMinPixels: 14,
+      radiusMaxPixels: 60,
       stroked: true,
+      filled: true,
       getLineWidth: 2,
-      getLineColor: (d: VehiclePoint) => {
-        if (d.id === selectedVehicleId) return [239, 68, 68, 255];
-        const rgb = HUB_COLORS[d.hub || "Default"] || HUB_COLORS.Default;
-        return [...rgb, 200];
-      },
-      getFillColor: (d: VehiclePoint) => {
-        const rgb = HUB_COLORS[d.hub || "Default"] || HUB_COLORS.Default;
-        return [...rgb, d.id === selectedVehicleId ? 160 : 60];
-      },
-      pickable: false,
-      updateTriggers: {
-        getRadius: [selectedVehicleId],
-        getFillColor: [selectedVehicleId],
-        getLineColor: [selectedVehicleId],
-      },
+      lineWidthMinPixels: 2,
+      getLineColor: [79, 70, 229, 255],
+      getFillColor: [79, 70, 229, 40],
     }),
-
-    // Google Maps / Uber style top-down rotating Car Icon Layer
-    new IconLayer({
-      id: "vehicle-car-icons",
+    new SimpleMeshLayer<VehiclePoint>({
+      id: "cars",
       data: filteredVehicles,
-      iconAtlas: CAR_ICON_SVG,
-      iconMapping: CAR_ICON_MAPPING,
-      getIcon: () => "car",
+      mesh: CAR_MESH as any,
       getPosition: (d: VehiclePoint) => [d.lon, d.lat, 0],
-      getSize: (d: VehiclePoint) => (d.id === selectedVehicleId ? 38 : 28),
-      sizeMinPixels: 24,
-      sizeMaxPixels: 48,
-      sizeScale: 1,
-      getAngle: (d: VehiclePoint) => 360 - d.heading,
+      // mesh nose points +Y; deck.gl yaw is CCW about up, so use -heading.
+      getOrientation: (d: VehiclePoint) => [0, -d.heading, 0],
+      getColor: (d: VehiclePoint) => paintForId(d.id) as [number, number, number],
+      getScale: (d: VehiclePoint) =>
+        d.id === selectedVehicleId ? [1.55, 1.55, 1.55] : [1, 1, 1],
+      sizeScale: carSizeScaleFor(viewState.zoom),
+      material: { ambient: 0.5, diffuse: 0.8, shininess: 60, specularColor: [70, 70, 70] },
       pickable: true,
-      onClick: (info) => {
-        if (info.object) {
-          onSelectVehicle((info.object as VehiclePoint).id);
-        } else {
-          onSelectVehicle(null);
-        }
-      },
+      onClick: (info) => onSelectVehicle(info.object ? (info.object as VehiclePoint).id : null),
       updateTriggers: {
-        getSize: [selectedVehicleId],
+        getScale: [selectedVehicleId],
       },
     }),
   ];
 
-  const handleViewStateChange = ({ viewState: nextState }: { viewState: any }) => {
-    // Clamp longitude & latitude so camera stays strictly within geographical boundaries
-    const clampedLon = Math.max(
-      NIGERIA_BOUNDS.minLongitude,
-      Math.min(NIGERIA_BOUNDS.maxLongitude, nextState.longitude)
-    );
-    const clampedLat = Math.max(
-      NIGERIA_BOUNDS.minLatitude,
-      Math.min(NIGERIA_BOUNDS.maxLatitude, nextState.latitude)
-    );
+  const handleViewStateChange = useCallback(({ viewState: v }: { viewState: any }) => {
     setViewState({
-      ...nextState,
-      longitude: clampedLon,
-      latitude: clampedLat,
+      ...v,
+      longitude: clamp(v.longitude, LAGOS_BOUNDS.minLon, LAGOS_BOUNDS.maxLon),
+      latitude: clamp(v.latitude, LAGOS_BOUNDS.minLat, LAGOS_BOUNDS.maxLat),
+      zoom: clamp(v.zoom, INITIAL_VIEW.minZoom, INITIAL_VIEW.maxZoom),
     });
-  };
+  }, []);
 
   return (
-    <div className="relative w-full h-full bg-[#070a11] overflow-hidden">
+    <div className="relative w-full h-full overflow-hidden bg-[#eef0ec]">
       <DeckGL
-        viewState={{
-          ...viewState,
-          pitch: viewMode3D ? viewState.pitch : 0,
-        }}
+        viewState={{ ...viewState, pitch: viewMode3D ? viewState.pitch : 0 }}
         onViewStateChange={handleViewStateChange}
-        controller={{ dragRotate: true, doubleClickZoom: false }}
+        controller={{ dragRotate: true, doubleClickZoom: false, touchRotate: true }}
+        effects={[lighting]}
         layers={layers}
-        getCursor={({ isHovering }) => (isHovering ? "pointer" : "default")}
+        getCursor={({ isHovering }) => (isHovering ? "pointer" : "grab")}
+        onClick={(info) => {
+          if (!info.object) onSelectVehicle(null);
+        }}
       >
         <Map
           reuseMaps
           renderWorldCopies={false}
           maxBounds={[
-            [NIGERIA_BOUNDS.minLongitude, NIGERIA_BOUNDS.minLatitude],
-            [NIGERIA_BOUNDS.maxLongitude, NIGERIA_BOUNDS.maxLatitude],
+            [LAGOS_BOUNDS.minLon, LAGOS_BOUNDS.minLat],
+            [LAGOS_BOUNDS.maxLon, LAGOS_BOUNDS.maxLat],
           ]}
-          mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/json"
+          mapStyle={MAP_STYLE}
+          onLoad={(e: any) => addBuildings(e.target)}
         />
       </DeckGL>
     </div>

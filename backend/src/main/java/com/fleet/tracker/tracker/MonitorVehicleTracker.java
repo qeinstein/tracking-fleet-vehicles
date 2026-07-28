@@ -95,6 +95,14 @@ public class MonitorVehicleTracker {
     }
 
     /**
+     * Clears all tracked vehicles. Guarded by the intrinsic lock so it is safe to invoke
+     * while reader threads may be taking deep-copy snapshots.
+     */
+    public synchronized void clear() {
+        locations.clear();
+    }
+
+    /**
      * Helper method to perform a full deep copy of the map and inner MutablePoints.
      * Private helper invoked strictly while holding the monitor lock.
      */

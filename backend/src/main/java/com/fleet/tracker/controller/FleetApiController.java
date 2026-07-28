@@ -53,12 +53,22 @@ public class FleetApiController {
         return ResponseEntity.ok(telemetry);
     }
 
+    /**
+     * Reseed the fleet. Optionally resize it via {@code ?count=N} so the map can show more
+     * (or fewer) live vehicles on demand. Without {@code count}, reseeds at the current size.
+     */
     @PostMapping("/simulation/reset")
-    public ResponseEntity<Map<String, Object>> resetSimulation() {
-        simulator.initializeVehicles();
+    public ResponseEntity<Map<String, Object>> resetSimulation(
+            @RequestParam(name = "count", required = false) Integer count) {
+        if (count != null) {
+            simulator.setFleetSize(count);
+        } else {
+            simulator.initializeVehicles();
+        }
         Map<String, Object> response = new HashMap<>();
         response.put("status", "SUCCESS");
-        response.put("message", "Reset and reseeded 1,000+ vehicles across Nigerian hubs.");
+        response.put("message", "Reseeded fleet across Lagos State districts.");
+        response.put("fleetSize", simulator.getFleetSize());
         response.put("activeVehicles", tracker.getVehicleCount());
         return ResponseEntity.ok(response);
     }

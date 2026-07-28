@@ -1,21 +1,31 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "Real-Time Concurrency Fleet Tracker (3D JCIP Monitor Pattern)",
-  description: "High-performance 3D fleet vehicle tracker evaluating JCIP Section 4.2.2 Java Monitor Pattern with Deck.gl and MapLibre GL.",
+  title: "Lagos Fleet Tracker — Real-Time 3D Vehicle Monitoring",
+  description:
+    "A real-time fleet tracker rendering live 3D vehicles on a Lagos street map, powered by a high-concurrency Java backend (JCIP Monitor Pattern).",
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body className="antialiased bg-[#070a11] text-slate-100 font-sans h-screen w-screen overflow-hidden">
-        {children}
-      </body>
+    <html lang="en" className={`${inter.variable} ${mono.variable}`}>
+      <body className="font-sans text-slate-900 bg-[#f6f7f5]">{children}</body>
     </html>
   );
 }

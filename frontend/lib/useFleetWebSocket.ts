@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { DISTRICTS, districtFromId, LAGOS_BOUNDS } from "./districts";
 
 export interface VehiclePoint {
   id: string;
   lat: number;
   lon: number;
-  heading: number; // degrees
-  speed: number;   // km/h
+  heading: number; // degrees, clockwise from north
+  speed: number; // km/h
   timestamp: number;
-  hub?: string;
+  hub: string; // Lagos district name
+  status: "moving" | "idle";
 }
 
 export interface TelemetryData {
@@ -23,226 +25,215 @@ export interface TelemetryData {
   payloadSizeBytes: number;
 }
 
-export interface RenderStats {
-  fps: number;
-  vehicleCount: number;
-  connected: boolean;
-// Hub specs for client-side fallback simulation when WebSocket backend is offline
-const INITIAL_HUB_SPECS = [
-  { prefix: "NG-LOS", hub: "Lagos", lat: 6.5244, lon: 3.3792, count: 12 },
-  { prefix: "NG-ABJ", hub: "Abuja", lat: 9.0765, lon: 7.3986, count: 10 },
-  { prefix: "NG-KAN", hub: "Kano", lat: 12.0022, lon: 8.5920, count: 8 },
-  { prefix: "NG-PHC", hub: "Port Harcourt", lat: 4.8156, lon: 7.0498, count: 8 },
-  { prefix: "NG-IBA", hub: "Ibadan", lat: 7.3775, lon: 3.9470, count: 8 },
-];
+const DEFAULT_TELEMETRY: TelemetryData = {
+  activeVehicleCount: 0,
+  snapshotIndex: 0,
+  totalMutations: 0,
+  lockLatencyMicros: 0,
+  deepCopyDurationMs: 0,
+  threadPoolSize: 16,
+  timestamp: 0,
+  payloadSizeBytes: 0,
+};
 
-function generateFallbackVehicles(): Map<String, VehiclePoint> {
-  const map = new Map<String, VehiclePoint>();
-  let idx = 100;
-  for (const spec of INITIAL_HUB_SPECS) {
-    for (let i = 0; i < spec.count; i++) {
-      const id = `${spec.prefix}-${idx++}`;
-      const angle = (i / spec.count) * 2 * Math.PI;
-      const dist = 0.05 + (i % 3) * 0.04;
-      const lat = spec.lat + Math.sin(angle) * dist;
-      const lon = spec.lon + Math.cos(angle) * dist;
-      const heading = Math.floor((angle * 180) / Math.PI + 90) % 360;
-      const speed = Math.floor(35 + (i % 5) * 12);
+const statusOf = (speed: number): "moving" | "idle" => (speed > 4 ? "moving" : "idle");
+
+// Client-side fallback fleet (used only if the backend WebSocket is unreachable) so the
+// map still shows moving cars in Lagos during a demo without the Java backend running.
+function generateFallbackVehicles(perDistrict = 6): Map<string, VehiclePoint> {
+  const map = new Map<string, VehiclePoint>();
+  for (const d of DISTRICTS) {
+    for (let i = 1; i <= perDistrict; i++) {
+      const id = `${"LAG-" + d.code}-${String(i).padStart(4, "0")}`;
+      const angle = (i / perDistrict) * 2 * Math.PI;
+      const dist = 0.008 + (i % 3) * 0.006;
       map.set(id, {
         id,
-        lat,
-        lon,
-        heading,
-        speed,
+        lat: d.center[1] + Math.sin(angle) * dist,
+        lon: d.center[0] + Math.cos(angle) * dist,
+        heading: (angle * 180) / Math.PI,
+        speed: 12 + (i % 5) * 8,
         timestamp: Date.now(),
-        hub: spec.hub,
+        hub: d.name,
+        status: "moving",
       });
     }
   }
   return map;
 }
 
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
 export function useFleetWebSocket(
   url: string = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8080/fleet/stream"
 ) {
   const [connected, setConnected] = useState(false);
-  const [telemetry, setTelemetry] = useState<TelemetryData>({
-    activeVehicleCount: 46,
-    snapshotIndex: 1,
-    totalMutations: 4600,
-    lockLatencyMicros: 0.12,
-    deepCopyDurationMs: 0.08,
-    threadPoolSize: 16,
-    timestamp: Date.now(),
-    payloadSizeBytes: 2048,
-  });
-
-  // Target positions received from WebSocket snapshots or fallback simulation
-  const targetMapRef = useRef<Map<String, VehiclePoint>>(generateFallbackVehicles());
-  // Current interpolated positions rendered on frame
-  const currentMapRef = useRef<Map<String, VehiclePoint>>(new Map());
-  // Trailing paths memory for selected vehicles
-  const pathHistoryRef = useRef<Map<String, [number, number][]>>(new Map());
-
-  // Render stats
+  const [telemetry, setTelemetry] = useState<TelemetryData>(DEFAULT_TELEMETRY);
   const [fps, setFps] = useState(60);
+  // Rendered vehicles are exposed as state (updated ~30x/sec from the interpolation loop)
+  // so deck.gl receives fresh data and the cars animate smoothly.
+  const [vehicles, setVehicles] = useState<VehiclePoint[]>([]);
+
+  const connectedRef = useRef(false);
+  const targetRef = useRef<Map<string, VehiclePoint>>(generateFallbackVehicles());
+  const currentRef = useRef<Map<string, VehiclePoint>>(new Map());
+  const pathHistoryRef = useRef<Map<string, [number, number][]>>(new Map());
+
   const frameCountRef = useRef(0);
-  const lastFpsTimeRef = useRef(performance.now());
-  const animationFrameRef = useRef<number | null>(null);
+  const lastFpsTimeRef = useRef<number>(0);
+  const lastEmitRef = useRef<number>(0);
+  const rafRef = useRef<number | null>(null);
 
-  // Parse hub prefix from vehicle ID
-  const deriveHub = (id: string) => {
-    if (id.startsWith("NG-LOS")) return "Lagos";
-    if (id.startsWith("NG-ABJ")) return "Abuja";
-    if (id.startsWith("NG-KAN")) return "Kano";
-    if (id.startsWith("NG-PHC")) return "Port Harcourt";
-    if (id.startsWith("NG-IBA")) return "Ibadan";
-    return "Nigeria";
-  };
+  useEffect(() => {
+    connectedRef.current = connected;
+  }, [connected]);
 
-  // WebSocket Connection Lifecycle
+  // ---- WebSocket lifecycle -------------------------------------------------
   useEffect(() => {
     let ws: WebSocket | null = null;
-    let reconnectTimeout: NodeJS.Timeout;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+    let closed = false;
 
     const connect = () => {
       try {
         ws = new WebSocket(url);
 
-        ws.onopen = () => {
-          setConnected(true);
-        };
+        ws.onopen = () => setConnected(true);
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === "FLEET_SNAPSHOT" && Array.isArray(data.vehicles)) {
-              const newTargets = new Map<String, VehiclePoint>();
-
+              const next = new Map<string, VehiclePoint>();
               for (const item of data.vehicles) {
-                // item: [id, lat, lon, heading, speed, timestamp]
+                // tuple: [id, lat, lon, heading, speed, timestamp]
                 const [id, lat, lon, heading, speed, timestamp] = item;
-                const vehicle: VehiclePoint = {
+                next.set(id, {
                   id,
                   lat,
                   lon,
                   heading,
                   speed,
                   timestamp,
-                  hub: deriveHub(id),
-                };
-                newTargets.set(id, vehicle);
+                  hub: districtFromId(id),
+                  status: statusOf(speed),
+                });
 
-                // Update trailing path line
                 let history = pathHistoryRef.current.get(id);
                 if (!history) {
                   history = [];
                   pathHistoryRef.current.set(id, history);
                 }
-                if (history.length === 0 || Math.abs(history[history.length - 1][0] - lon) > 0.0001) {
+                const last = history[history.length - 1];
+                if (!last || Math.abs(last[0] - lon) > 0.00008 || Math.abs(last[1] - lat) > 0.00008) {
                   history.push([lon, lat]);
-                  if (history.length > 25) history.shift();
+                  if (history.length > 40) history.shift();
                 }
               }
-
-              targetMapRef.current = newTargets;
-
-              if (data.telemetry) {
-                setTelemetry(data.telemetry);
-              }
+              targetRef.current = next;
+              if (data.telemetry) setTelemetry(data.telemetry);
             }
           } catch (e) {
-            console.error("Failed to parse fleet WebSocket message", e);
+            // ignore malformed frame
           }
         };
 
         ws.onclose = () => {
           setConnected(false);
-          reconnectTimeout = setTimeout(connect, 2000);
+          if (!closed) reconnectTimeout = setTimeout(connect, 2000);
         };
-
-        ws.onerror = (err) => {
-          setConnected(false);
-          ws?.close();
-        };
+        ws.onerror = () => ws?.close();
       } catch (e) {
         setConnected(false);
-        reconnectTimeout = setTimeout(connect, 2000);
+        if (!closed) reconnectTimeout = setTimeout(connect, 2000);
       }
     };
 
     connect();
-
     return () => {
-      if (ws) ws.close();
+      closed = true;
+      ws?.close();
       clearTimeout(reconnectTimeout);
     };
   }, [url]);
 
-  // Client-side Frame Interpolation Loop (60 FPS)
-  const interpolateFrames = useCallback(() => {
-    const lerpFactor = 0.25; // Smooth interpolation factor
+  // ---- 60fps interpolation loop -------------------------------------------
+  const loop = useCallback((now: number) => {
+    const lerp = 0.22;
+    const target = targetRef.current;
+    const current = currentRef.current;
 
-    // Advance simulated targets when WS is offline to keep vehicles moving live on map
-    if (!connected && targetMap.size > 0) {
-      targetMap.forEach((target) => {
-        const rad = (target.heading * Math.PI) / 180;
-        target.lat += Math.cos(rad) * 0.00008;
-        target.lon += Math.sin(rad) * 0.00008;
-        target.heading = (target.heading + (Math.random() - 0.49) * 1.5 + 360) % 360;
+    // When offline, advance the fallback targets so the map keeps moving.
+    if (!connectedRef.current) {
+      target.forEach((t) => {
+        const rad = (t.heading * Math.PI) / 180;
+        let nlat = t.lat + Math.cos(rad) * 0.00006;
+        let nlon = t.lon + Math.sin(rad) * 0.00006;
+        if (nlat < LAGOS_BOUNDS.minLat || nlat > LAGOS_BOUNDS.maxLat) t.heading = (180 - t.heading + 360) % 360;
+        if (nlon < LAGOS_BOUNDS.minLon || nlon > LAGOS_BOUNDS.maxLon) t.heading = (360 - t.heading) % 360;
+        t.lat = clamp(nlat, LAGOS_BOUNDS.minLat, LAGOS_BOUNDS.maxLat);
+        t.lon = clamp(nlon, LAGOS_BOUNDS.minLon, LAGOS_BOUNDS.maxLon);
+        t.heading = (t.heading + (Math.random() - 0.49) * 2 + 360) % 360;
       });
     }
 
-    targetMap.forEach((target, id) => {
-      let current = currentMap.get(id);
-      if (!current) {
-        currentMap.set(id, { ...target });
+    target.forEach((t, id) => {
+      const c = current.get(id);
+      if (!c) {
+        current.set(id, { ...t });
       } else {
-        // Interpolate lat & lon
-        current.lat += (target.lat - current.lat) * lerpFactor;
-        current.lon += (target.lon - current.lon) * lerpFactor;
-
-        // Angle interpolation (shortest path)
-        let diff = (target.heading - current.heading + 360) % 360;
+        c.lat += (t.lat - c.lat) * lerp;
+        c.lon += (t.lon - c.lon) * lerp;
+        let diff = (t.heading - c.heading + 360) % 360;
         if (diff > 180) diff -= 360;
-        current.heading = (current.heading + diff * lerpFactor + 360) % 360;
-
-        current.speed = target.speed;
-        current.timestamp = target.timestamp;
+        c.heading = (c.heading + diff * lerp + 360) % 360;
+        c.speed = t.speed;
+        c.timestamp = t.timestamp;
+        c.hub = t.hub;
+        c.status = t.status;
       }
     });
-
-    // Clean up removed vehicles
-    currentMap.forEach((_, id) => {
-      if (!targetMap.has(id)) {
-        currentMap.delete(id);
-      }
+    current.forEach((_, id) => {
+      if (!target.has(id)) current.delete(id);
     });
 
-    // Measure FPS
+    // FPS meter
     frameCountRef.current++;
-    const now = performance.now();
+    if (lastFpsTimeRef.current === 0) lastFpsTimeRef.current = now;
     if (now - lastFpsTimeRef.current >= 1000) {
       setFps(Math.round((frameCountRef.current * 1000) / (now - lastFpsTimeRef.current)));
       frameCountRef.current = 0;
       lastFpsTimeRef.current = now;
     }
 
-    animationFrameRef.current = requestAnimationFrame(interpolateFrames);
+    // Emit a fresh array ~30x/sec to drive deck.gl.
+    if (now - lastEmitRef.current >= 33) {
+      lastEmitRef.current = now;
+      setVehicles(Array.from(current.values()));
+      if (!connectedRef.current) {
+        setTelemetry((prev) => ({
+          ...prev,
+          activeVehicleCount: current.size,
+          snapshotIndex: prev.snapshotIndex + 1,
+          timestamp: Date.now(),
+        }));
+      }
+    }
+
+    rafRef.current = requestAnimationFrame(loop);
   }, []);
 
   useEffect(() => {
-    animationFrameRef.current = requestAnimationFrame(interpolateFrames);
+    rafRef.current = requestAnimationFrame(loop);
     return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [interpolateFrames]);
+  }, [loop]);
 
-  return {
-    connected,
-    telemetry,
-    fps,
-    getCurrentVehicles: () => Array.from(currentMapRef.current.values()),
-    getVehicleHistory: (id: string) => pathHistoryRef.current.get(id) || [],
-  };
+  const getVehicleHistory = useCallback(
+    (id: string): [number, number][] => pathHistoryRef.current.get(id) || [],
+    []
+  );
+
+  return { connected, telemetry, fps, vehicles, getVehicleHistory };
 }

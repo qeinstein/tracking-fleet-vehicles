@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { Compass, Eye, Filter, RefreshCw, Search, Target } from "lucide-react";
+import { Search, Box, Square, Crosshair, Users, ChevronDown } from "lucide-react";
+import { DISTRICTS } from "../lib/districts";
 
 interface FilterControlBarProps {
   hubFilter: string;
@@ -12,11 +13,12 @@ interface FilterControlBarProps {
   onToggle3D: () => void;
   isFollowMode: boolean;
   onToggleFollowMode: () => void;
-  onResetSimulation: () => void;
   selectedVehicleId: string | null;
+  fleetSize: number;
+  onSetFleetSize: (n: number) => void;
 }
 
-const HUBS = ["ALL", "Lagos", "Abuja", "Kano", "Port Harcourt", "Ibadan"];
+const FLEET_SIZES = [300, 600, 1200, 2400];
 
 export default function FilterControlBar({
   hubFilter,
@@ -27,80 +29,89 @@ export default function FilterControlBar({
   onToggle3D,
   isFollowMode,
   onToggleFollowMode,
-  onResetSimulation,
   selectedVehicleId,
+  fleetSize,
+  onSetFleetSize,
 }: FilterControlBarProps) {
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 glass-panel p-2 rounded-2xl border border-slate-800 shadow-2xl">
-      {/* Hub Filter Selector */}
-      <div className="flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800/60">
-        <div className="px-2 text-slate-500 flex items-center gap-1">
-          <Filter className="w-3.5 h-3.5" />
-          <span className="text-[10px] uppercase font-bold tracking-wider hidden sm:inline">Hub</span>
-        </div>
-        {HUBS.map((hub) => (
-          <button
-            key={hub}
-            onClick={() => onSelectHub(hub)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              hubFilter === hub
-                ? "bg-cyan-500 text-black font-semibold shadow-lg shadow-cyan-500/20"
-                : "text-slate-400 hover:text-white hover:bg-slate-800/50"
-            }`}
-          >
-            {hub}
-          </button>
-        ))}
+    <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 panel rounded-2xl shadow-panel-lg p-2 flex items-center gap-2 flex-wrap justify-center max-w-[calc(100vw-2rem)]">
+      {/* District filter */}
+      <div className="relative">
+        <select
+          value={hubFilter}
+          onChange={(e) => onSelectHub(e.target.value)}
+          className="appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-3 pr-8 py-2 text-sm text-slate-700 font-medium focus:outline-none focus:border-accent cursor-pointer hover:bg-slate-100 transition-colors"
+        >
+          <option value="ALL">All districts</option>
+          {DISTRICTS.map((d) => (
+            <option key={d.code} value={d.name}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
       </div>
 
-      {/* Vehicle ID Search Input */}
+      {/* Search */}
       <div className="relative flex items-center">
-        <Search className="absolute left-3 w-3.5 h-3.5 text-slate-400" />
+        <Search className="absolute left-3 w-4 h-4 text-slate-400" />
         <input
           type="text"
-          placeholder="Search Vehicle ID..."
+          placeholder="Search vehicle ID…"
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
-          className="w-40 sm:w-48 bg-slate-950/60 border border-slate-800/80 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 font-mono transition-all"
+          className="w-40 sm:w-48 bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:border-accent font-mono transition-colors"
         />
       </div>
 
-      {/* Camera 3D / 2D Toggle */}
+      <div className="w-px h-7 bg-slate-200 mx-0.5" />
+
+      {/* Fleet size — "show more cars" */}
+      <div className="relative flex items-center" title="Number of vehicles in the fleet">
+        <Users className="absolute left-3 w-4 h-4 text-slate-400 pointer-events-none" />
+        <select
+          value={fleetSize}
+          onChange={(e) => onSetFleetSize(Number(e.target.value))}
+          className="appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-8 py-2 text-sm text-slate-700 font-medium focus:outline-none focus:border-accent cursor-pointer hover:bg-slate-100 transition-colors"
+        >
+          {FLEET_SIZES.map((n) => (
+            <option key={n} value={n}>
+              {n.toLocaleString()} cars
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+      </div>
+
+      <div className="w-px h-7 bg-slate-200 mx-0.5" />
+
+      {/* 3D / 2D toggle */}
       <button
         onClick={onToggle3D}
-        className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all ${
+        className={`px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-1.5 border transition-colors ${
           viewMode3D
-            ? "bg-slate-800 border-cyan-500/50 text-cyan-300 shadow-md"
-            : "bg-slate-950/60 border-slate-800 text-slate-400 hover:text-white"
+            ? "bg-accent-soft border-accent/30 text-accent"
+            : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
         }`}
       >
-        <Compass className={`w-3.5 h-3.5 ${viewMode3D ? "text-cyan-400" : ""}`} />
-        <span>{viewMode3D ? "3D Tilt (55°)" : "2D Flat"}</span>
+        {viewMode3D ? <Box className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+        <span>{viewMode3D ? "3D" : "2D"}</span>
       </button>
 
-      {/* Follow Vehicle Mode Toggle */}
+      {/* Follow */}
       <button
         disabled={!selectedVehicleId}
         onClick={onToggleFollowMode}
-        className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all ${
+        className={`px-3 py-2 rounded-xl text-sm font-medium flex items-center gap-1.5 border transition-colors ${
           !selectedVehicleId
-            ? "opacity-40 cursor-not-allowed bg-slate-950 border-slate-900 text-slate-600"
+            ? "opacity-40 cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400"
             : isFollowMode
-            ? "bg-cyan-950/80 border-cyan-500 text-cyan-300 shadow-md"
-            : "bg-slate-950/60 border-slate-800 text-slate-400 hover:text-white"
+            ? "bg-accent-soft border-accent/30 text-accent"
+            : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
         }`}
       >
-        <Target className={`w-3.5 h-3.5 ${isFollowMode ? "text-cyan-400 animate-pulse" : ""}`} />
+        <Crosshair className="w-4 h-4" />
         <span>Follow</span>
-      </button>
-
-      {/* Reset Simulation Button */}
-      <button
-        onClick={onResetSimulation}
-        title="Reseed 1,000+ Vehicles"
-        className="p-2 rounded-xl bg-slate-950/60 border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800/60 transition-all"
-      >
-        <RefreshCw className="w-3.5 h-3.5" />
       </button>
     </div>
   );
