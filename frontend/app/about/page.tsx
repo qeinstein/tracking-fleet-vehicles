@@ -83,9 +83,10 @@ export default function AboutPage() {
             A real-time fleet, rendered in 3D over Lagos
           </h1>
           <p className="text-slate-600 mt-4 text-lg leading-relaxed">
-            A high-concurrency Java backend simulates a live fleet of vehicles driving across Lagos
-            State and streams their positions to the browser, where a hardware-accelerated WebGL map
-            renders every vehicle as a moving 3D car. The project is a study of the{" "}
+            A high-concurrency Java backend simulates a live fleet driving along the real Lagos road
+            network (from OpenStreetMap) and streams their positions to the browser, where a
+            hardware-accelerated WebGL map renders every vehicle as a moving 3D car. The project is a
+            study of the{" "}
             <strong className="text-slate-800">Java Monitor Pattern</strong> (Java Concurrency in
             Practice, §4.2.2) under thousands of simultaneous reads and writes per second.
           </p>
@@ -95,9 +96,9 @@ export default function AboutPage() {
         <Section icon={<Boxes className="w-4 h-4" />} title="What was built">
           <div className="grid sm:grid-cols-2 gap-4">
             <Card title="Concurrent simulation backend">
-              Spring Boot 3 / Java 17. A pool of 16 worker threads advances every vehicle at 50&nbsp;Hz,
-              producing thousands of guarded GPS mutations per second — all funnelled through a single
-              thread-safe monitor.
+              Spring Boot 3 / Java 17. A pool of 16 worker threads advances every vehicle at 50&nbsp;Hz
+              along the real Lagos road graph, producing thousands of guarded GPS mutations per second —
+              all funnelled through a single thread-safe monitor.
             </Card>
             <Card title="Real-time 3D map client">
               Next.js 14 + deck.gl + MapLibre GL. A Google-Maps-style vector basemap with extruded 3D
@@ -107,9 +108,14 @@ export default function AboutPage() {
               A 20&nbsp;Hz WebSocket broadcaster publishes a compact snapshot of the whole fleet
               (~92&nbsp;KB/tick); the client interpolates between snapshots for smooth 60&nbsp;FPS motion.
             </Card>
+            <Card title="Real road-network movement">
+              Vehicles drive on the actual Lagos road network — 128k junctions / 162k edges pulled
+              from OpenStreetMap — following real road curves and turning randomly at junctions, at
+              speeds that vary by road class, driver and congestion.
+            </Card>
             <Card title="Lagos-locked experience">
               The camera is bounded to Lagos State, so the map never zooms past the region and the
-              fleet is always dense and visible. Fleet size is adjustable live (300 – 2,400 cars).
+              fleet is always visible. Fleet size is adjustable live from the control bar.
             </Card>
           </div>
         </Section>
@@ -125,7 +131,7 @@ export default function AboutPage() {
                 <div className="space-y-2">
                   <div className="rounded-lg bg-white border border-slate-200 px-3 py-2">
                     16 simulator threads
-                    <span className="text-slate-400"> — write setLocation() @ 50 Hz</span>
+                    <span className="text-slate-400"> — drive OSM roads · setLocation() @ 50 Hz</span>
                   </div>
                   <div className="flex justify-center text-slate-300">↓ guarded by intrinsic lock</div>
                   <div className="rounded-lg bg-accent-soft border border-accent/20 px-3 py-2 text-accent font-medium">
@@ -260,6 +266,11 @@ export default function AboutPage() {
               lock.
             </li>
             <li>
+              <strong className="text-slate-800">Turning OSM into a routable graph.</strong> Raw
+              OpenStreetMap ways overlap and cross without implying junctions; they were split at every
+              shared node into a navigable node/edge graph so vehicles can actually turn at intersections.
+            </li>
+            <li>
               <strong className="text-slate-800">Runtime reseeding.</strong> Resizing the fleet while 16
               threads iterated their partitions risked <code className="text-slate-700">ConcurrentModificationException</code>;
               solved by publishing the fleet as an immutable <code className="text-slate-700">volatile</code>{" "}
@@ -293,6 +304,7 @@ export default function AboutPage() {
               "deck.gl",
               "MapLibre GL",
               "three.js",
+              "OpenStreetMap",
               "Tailwind CSS",
             ].map((t) => (
               <span
