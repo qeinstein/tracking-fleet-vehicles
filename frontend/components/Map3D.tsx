@@ -37,14 +37,16 @@ const INITIAL_VIEW = {
   maxPitch: 70,
 };
 
-const CAR_MODEL_LENGTH_M = 4.6;
-const CAR_TARGET_PX = 26; // keep cars a readable, roughly-constant size across zoom levels
+const CAR_MODEL_LENGTH_M = 4.6; // mesh length in local units (≈ metres)
+const CAR_REAL_SIZE_SCALE = 6; // fixed real-world size: cars grow as you zoom in
+const CAR_MIN_PX = 6; // floor so cars never vanish (stay small dots when zoomed out)
 
-// deck.gl SimpleMeshLayer sizes meshes in metres, so a fixed size looks tiny when zoomed out
-// and huge when zoomed in. Derive a per-zoom sizeScale that holds the on-screen size steady.
+// Cars have a fixed real-world metre size (so they're small when zoomed out and only
+// grow as you zoom in), with a modest minimum on-screen size so they never disappear.
 function carSizeScaleFor(zoom: number): number {
   const metersPerPixel = (156543.03392 * Math.cos((LAGOS_CENTER[1] * Math.PI) / 180)) / Math.pow(2, zoom);
-  return Math.max(6, (CAR_TARGET_PX * metersPerPixel) / CAR_MODEL_LENGTH_M);
+  const floorScale = (CAR_MIN_PX * metersPerPixel) / CAR_MODEL_LENGTH_M;
+  return Math.max(CAR_REAL_SIZE_SCALE, floorScale);
 }
 
 const lighting = new LightingEffect({
