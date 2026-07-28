@@ -94,25 +94,6 @@ export const CAR_MESH = {
   colors: { value: car.colors, size: 3 },
 };
 
-// Realistic car-paint palette (0–255). Assigned deterministically per vehicle id
-// so the fleet looks like a varied mix of real cars.
-const PAINTS: RGB[] = [
-  [238, 240, 243], // white
-  [244, 245, 247], // pearl white
-  [190, 196, 203], // silver
-  [120, 126, 134], // grey
-  [40, 44, 52], // black
-  [188, 52, 52], // red
-  [40, 86, 168], // blue
-  [28, 56, 104], // navy
-  [46, 96, 74], // green
-  [214, 170, 66], // gold (Lagos taxi yellow-ish)
-];
-
-export function paintForId(id: string): [number, number, number] {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) {
-    h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  }
-  return PAINTS[h % PAINTS.length];
-}
+// Per-car paint colour lives in a dependency-free module so the data hook can import it
+// without pulling in three.js.
+export { paintForId } from "./carPaint";

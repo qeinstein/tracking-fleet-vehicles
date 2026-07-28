@@ -32,7 +32,7 @@ const INITIAL_VIEW = {
   zoom: 12.9,
   pitch: 52,
   bearing: -18,
-  minZoom: 10.4,
+  minZoom: 11.5, // keep the viewport smaller than Lagos so panning stays coupled to the map
   maxZoom: 19,
   maxPitch: 70,
 };
@@ -139,6 +139,7 @@ export default function Map3D({
       id: "selection-ring",
       data: selectedVehicleId ? filteredVehicles.filter((v) => v.id === selectedVehicleId) : [],
       getPosition: (d: VehiclePoint) => [d.lon, d.lat, 0],
+      transitions: { getPosition: { duration: 55 } },
       getRadius: 26,
       radiusUnits: "meters",
       radiusMinPixels: 14,
@@ -157,12 +158,14 @@ export default function Map3D({
       getPosition: (d: VehiclePoint) => [d.lon, d.lat, 0],
       // mesh nose points +Y; deck.gl yaw is CCW about up, so use -heading.
       getOrientation: (d: VehiclePoint) => [0, -d.heading, 0],
-      getColor: (d: VehiclePoint) => paintForId(d.id) as [number, number, number],
+      getColor: (d: VehiclePoint) => d.color ?? (paintForId(d.id) as [number, number, number]),
       getScale: (d: VehiclePoint) =>
         d.id === selectedVehicleId ? [1.55, 1.55, 1.55] : [1, 1, 1],
       sizeScale: carSizeScaleFor(viewState.zoom),
       material: { ambient: 0.5, diffuse: 0.8, shininess: 60, specularColor: [70, 70, 70] },
       pickable: true,
+      // GPU-interpolate position between the ~20 Hz snapshots for smooth 60 FPS motion.
+      transitions: { getPosition: { duration: 55 } },
       onClick: (info) => onSelectVehicle(info.object ? (info.object as VehiclePoint).id : null),
       updateTriggers: {
         getScale: [selectedVehicleId],
@@ -195,10 +198,6 @@ export default function Map3D({
         <Map
           reuseMaps
           renderWorldCopies={false}
-          maxBounds={[
-            [LAGOS_BOUNDS.minLon, LAGOS_BOUNDS.minLat],
-            [LAGOS_BOUNDS.maxLon, LAGOS_BOUNDS.maxLat],
-          ]}
           mapStyle={MAP_STYLE}
           onLoad={(e: any) => addBuildings(e.target)}
         />
