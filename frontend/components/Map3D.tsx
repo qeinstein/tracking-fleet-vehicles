@@ -38,8 +38,8 @@ const INITIAL_VIEW = {
 };
 
 const CAR_MODEL_LENGTH_M = 4.6; // mesh length in local units (≈ metres)
-const CAR_REAL_SIZE_SCALE = 15; // fixed real-world size: cars grow clearly as you zoom in
-const CAR_MIN_PX = 5; // floor so cars stay small dots when zoomed out (never vanish)
+const CAR_REAL_SIZE_SCALE = 6; // fixed real-world size: cars grow as you zoom in
+const CAR_MIN_PX = 6; // floor so cars never vanish (stay small dots when zoomed out)
 
 // Cars have a fixed real-world metre size (so they're small when zoomed out and only
 // grow as you zoom in), with a modest minimum on-screen size so they never disappear.
