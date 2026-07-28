@@ -166,7 +166,6 @@ export default function Map3D({
         <Map
           reuseMaps
           mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/json"
-          preventStyleDiffing={true}
         />
       </DeckGL>
     </div>
