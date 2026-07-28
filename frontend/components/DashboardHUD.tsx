@@ -36,8 +36,8 @@ export default function DashboardHUD({
             </span>
           </div>
           <p className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
-            <Radio className="w-3 h-3 text-cyan-400" />
-            <span>ws://localhost:8080/fleet/stream</span>
+            <Radio className={`w-3 h-3 ${connected ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} />
+            <span>{connected ? "Live Real-Time Telemetry Stream" : "Active Simulation Stream"}</span>
           </p>
         </div>
       </div>
