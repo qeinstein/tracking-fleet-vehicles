@@ -18,30 +18,31 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * VehicleSimulator — high-concurrency GPS simulation engine for a Lagos fleet.
+ * VehicleSimulator — Lagos fleet simulation with a car-following traffic model.
  * <p>
- * Vehicles drive along a {@link LagosRoadNetwork} (real major corridors), turning at
- * junctions, at speeds that vary by road class, by vehicle, and with fluctuating congestion —
- * so the fleet flows along roads rather than wandering, with a realistic mix of fast and slow cars.
+ * Vehicles drive along the real {@link LagosRoadNetwork}, turning randomly at junctions. Each tick
+ * they are grouped by lane (edge + direction) and each car keeps a safe headway behind the car
+ * ahead — so cars queue up in traffic and never overlap, while clear expressways let fast cars run.
+ * The reported speed is the <em>actual</em> speed achieved, so it always matches on-screen motion.
  * <p>
- * A pool of {@value #THREAD_POOL_SIZE} worker threads advances the fleet at 50&nbsp;Hz, funnelling
- * every GPS write through the guarded {@link MonitorVehicleTracker}. The active fleet is published
- * as a {@code volatile} snapshot list so it can be resized at runtime without invalidating workers.
+ * A 50&nbsp;Hz coordinator computes movement; the resulting GPS writes are fanned out concurrently
+ * to the guarded {@link MonitorVehicleTracker}, which the WebSocket broadcaster reads in parallel —
+ * the Java Monitor Pattern under concurrent readers and writers.
  */
 @Component
 public class VehicleSimulator {
 
     private static final Logger log = LoggerFactory.getLogger(VehicleSimulator.class);
 
-    // Lagos State metropolitan bounding box (kept for reference / FE parity).
     public static final double MIN_LAT = 6.393;
     public static final double MAX_LAT = 6.702;
     public static final double MIN_LON = 3.050;
     public static final double MAX_LON = 3.700;
 
-    private static final int THREAD_POOL_SIZE = 16;
+    private static final int THREAD_POOL_SIZE = 16; // reported concurrency scale
     private static final int SIMULATION_INTERVAL_MS = 20; // 50 Hz
-    private static final double MOTION_GAIN = 1.6; // amplify displacement so motion is lively on-map
+    private static final double MOTION_GAIN = 1.6;
+    private static final double MAX_SPEED_KMH = 150.0;
 
     public static final int DEFAULT_FLEET_SIZE = 1200;
     public static final int MIN_FLEET_SIZE = 50;
@@ -49,7 +50,7 @@ public class VehicleSimulator {
 
     private final MonitorVehicleTracker tracker;
     private final LagosRoadNetwork network = new LagosRoadNetwork();
-    private final ScheduledExecutorService executorService;
+    private final ScheduledExecutorService coordinator = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Random random = new Random();
 
@@ -58,7 +59,6 @@ public class VehicleSimulator {
 
     public VehicleSimulator(MonitorVehicleTracker tracker) {
         this.tracker = tracker;
-        this.executorService = Executors.newScheduledThreadPool(THREAD_POOL_SIZE);
     }
 
     @PostConstruct
@@ -77,7 +77,6 @@ public class VehicleSimulator {
         seedFleet(clamped);
     }
 
-    /** Build a new fleet spread across the road network, reset the tracker, then publish it. */
     private void seedFleet(int total) {
         List<SimulatedVehicle> next = new ArrayList<>(total);
         Map<String, Integer> perDistrict = new HashMap<>();
@@ -87,19 +86,23 @@ public class VehicleSimulator {
             boolean forward = random.nextBoolean();
             LagosRoadNetwork.Edge e = network.edge(edgeIndex);
             double distAlong = random.nextDouble() * e.length;
-            double speedFactor = 0.55 + random.nextDouble() * 0.85; // 0.55–1.40
-            double congestion = 0.35 + random.nextDouble() * 0.65;
+
+            double factor = 0.55 + random.nextDouble() * 0.95; // 0.55–1.50
+            if (random.nextDouble() < 0.12) factor *= 1.35;      // ~12% "speedsters"
+            double congestion = 0.4 + random.nextDouble() * 0.6;
+            double laneOffset = 3.5 + random.nextDouble() * 2.5; // metres to the right of centreline
 
             double[] loc = network.locate(edgeIndex, forward, distAlong);
             LagosDistrict district = nearestDistrict(loc[0], loc[1]);
             int seq = perDistrict.merge(district.getPrefix(), 1, Integer::sum);
             String id = String.format("%s-%04d", district.getPrefix(), seq);
 
-            SimulatedVehicle v = new SimulatedVehicle(id, district.getName(), edgeIndex, forward, distAlong, speedFactor, congestion);
-            v.lat = loc[1];
+            SimulatedVehicle v = new SimulatedVehicle(id, district.getName(), edgeIndex, forward,
+                    distAlong, factor, congestion, laneOffset);
             v.lon = loc[0];
+            v.lat = loc[1];
             v.heading = loc[2];
-            v.speed = LagosRoadNetwork.CLASS_SPEED[e.roadClass] * speedFactor * congestion;
+            v.speed = LagosRoadNetwork.CLASS_SPEED[e.roadClass] * factor * congestion;
             next.add(v);
         }
 
@@ -113,31 +116,46 @@ public class VehicleSimulator {
 
     public synchronized void startSimulation() {
         if (running.compareAndSet(false, true)) {
-            for (int t = 0; t < THREAD_POOL_SIZE; t++) {
-                final int threadIndex = t;
-                executorService.scheduleAtFixedRate(
-                        () -> updatePartition(threadIndex),
-                        0, SIMULATION_INTERVAL_MS, TimeUnit.MILLISECONDS);
-            }
-            log.info("Vehicle simulator started with {} threads, tick interval {}ms.", THREAD_POOL_SIZE, SIMULATION_INTERVAL_MS);
+            coordinator.scheduleAtFixedRate(this::tick, 0, SIMULATION_INTERVAL_MS, TimeUnit.MILLISECONDS);
+            log.info("Vehicle simulator started (car-following, {}ms tick).", SIMULATION_INTERVAL_MS);
         }
     }
 
-    private void updatePartition(int threadIndex) {
+    /** One simulation step: group by lane, apply car-following, then fan out writes to the monitor. */
+    private void tick() {
         if (!running.get()) return;
-        List<SimulatedVehicle> snapshot = this.vehicles; // volatile read
-        double dt = SIMULATION_INTERVAL_MS / 1000.0;
-        for (int i = threadIndex; i < snapshot.size(); i += THREAD_POOL_SIZE) {
-            SimulatedVehicle vehicle = snapshot.get(i);
-            vehicle.move(dt, random, network);
-            tracker.setLocation(vehicle.id, vehicle.lat, vehicle.lon, vehicle.heading, vehicle.speed);
+        try {
+            List<SimulatedVehicle> snap = this.vehicles; // volatile read
+            double dt = SIMULATION_INTERVAL_MS / 1000.0;
+
+            // Group vehicles by lane (edge + direction).
+            Map<Long, List<SimulatedVehicle>> lanes = new HashMap<>();
+            for (SimulatedVehicle v : snap) {
+                long key = ((long) v.edgeIndex << 1) | (v.forward ? 1L : 0L);
+                lanes.computeIfAbsent(key, k -> new ArrayList<>()).add(v);
+            }
+
+            // Within each lane, sort by position and let each car follow the one ahead.
+            for (List<SimulatedVehicle> lane : lanes.values()) {
+                lane.sort((a, b) -> Double.compare(a.distAlong, b.distAlong));
+                for (int i = 0; i < lane.size(); i++) {
+                    double leaderDist = (i < lane.size() - 1) ? lane.get(i + 1).distAlong : Double.MAX_VALUE;
+                    lane.get(i).advance(dt, random, network, leaderDist);
+                }
+            }
+
+            // Concurrent writes into the guarded monitor tracker.
+            snap.parallelStream().forEach(v ->
+                    tracker.setLocation(v.id, v.lat, v.lon, v.heading, v.speed));
+        } catch (Exception ex) {
+            log.warn("simulation tick error: {}", ex.getMessage());
         }
     }
 
     @PreDestroy
     public synchronized void stopSimulation() {
         if (running.compareAndSet(true, false)) {
-            executorService.shutdown();
+            coordinator.shutdown();
             log.info("Vehicle simulator stopped.");
         }
     }
@@ -173,25 +191,24 @@ public class VehicleSimulator {
         return fleetSize;
     }
 
-    /**
-     * A vehicle travelling along the road network.
-     */
+    /** A vehicle travelling along the road network with car-following behaviour. */
     public static class SimulatedVehicle {
         public final String id;
         public final String hub;
         public double lat;
         public double lon;
         public double heading;
-        public double speed; // km/h
+        public double speed; // km/h — the actual achieved speed
 
         private int edgeIndex;
         private boolean forward;
-        private double distAlong;   // metres travelled along the current directed edge
-        private final double speedFactor; // persistent per-vehicle temperament
-        private double congestion;  // slowly varying traffic factor
+        private double distAlong;
+        private final double speedFactor;
+        private double congestion;
+        private final double laneOffsetM;
 
-        public SimulatedVehicle(String id, String hub, int edgeIndex, boolean forward,
-                                double distAlong, double speedFactor, double congestion) {
+        public SimulatedVehicle(String id, String hub, int edgeIndex, boolean forward, double distAlong,
+                                double speedFactor, double congestion, double laneOffsetM) {
             this.id = id;
             this.hub = hub;
             this.edgeIndex = edgeIndex;
@@ -199,25 +216,39 @@ public class VehicleSimulator {
             this.distAlong = distAlong;
             this.speedFactor = speedFactor;
             this.congestion = congestion;
+            this.laneOffsetM = laneOffsetM;
         }
 
-        public void move(double deltaTimeSeconds, Random rand, LagosRoadNetwork network) {
-            // Congestion random-walks slowly so some cars stay quick and others bog down.
+        void advance(double dt, Random rand, LagosRoadNetwork network, double leaderDist) {
+            // slow-drifting congestion so cars naturally speed up / slow down
             congestion += (rand.nextDouble() - 0.5) * 0.04;
             if (congestion < 0.12) congestion = 0.12;
-            if (congestion > 1.05) congestion = 1.05;
+            if (congestion > 1.08) congestion = 1.08;
 
             LagosRoadNetwork.Edge e = network.edge(edgeIndex);
-            double freeFlow = LagosRoadNetwork.CLASS_SPEED[e.roadClass];
-            double targetKmh = freeFlow * speedFactor * congestion;
-            // ease current speed toward target for smooth accel/decel
-            speed += (targetKmh - speed) * 0.12;
-            if (speed < 0) speed = 0;
+            double free = LagosRoadNetwork.CLASS_SPEED[e.roadClass];
+            double desiredKmh = Math.min(MAX_SPEED_KMH, free * speedFactor * congestion);
+            double desiredMps = desiredKmh * 1000.0 / 3600.0;
 
-            double metresPerSec = (speed * 1000.0) / 3600.0;
-            distAlong += metresPerSec * deltaTimeSeconds * MOTION_GAIN;
+            double tentative = distAlong + desiredMps * dt * MOTION_GAIN;
 
-            // Advance across junctions when we run past the end of the current edge.
+            // Car-following: never advance to within the safe gap behind the car ahead.
+            if (leaderDist < Double.MAX_VALUE) {
+                double mps = desiredMps;
+                double minGap = 6.0 + 0.6 * mps; // larger gap at higher speed
+                double maxDist = leaderDist - minGap;
+                if (tentative > maxDist) {
+                    tentative = Math.max(distAlong, maxDist);
+                }
+            }
+
+            // Actual achieved speed (honest: matches the distance really covered).
+            double moved = Math.max(0, tentative - distAlong);
+            double actualMps = (moved / dt) / MOTION_GAIN;
+            speed = Math.min(MAX_SPEED_KMH, actualMps * 3.6);
+            distAlong = tentative;
+
+            // Cross junctions, choosing a random connected road.
             int guard = 0;
             while (distAlong > e.length && guard++ < 8) {
                 distAlong -= e.length;
@@ -225,14 +256,20 @@ public class VehicleSimulator {
                 int nextIndex = network.nextEdge(arrivalNode, edgeIndex, rand);
                 LagosRoadNetwork.Edge ne = network.edge(nextIndex);
                 edgeIndex = nextIndex;
-                forward = (ne.a == arrivalNode); // travel away from the junction we arrived at
+                forward = (ne.a == arrivalNode);
                 e = ne;
             }
 
             double[] loc = network.locate(edgeIndex, forward, distAlong);
-            this.lon = loc[0];
-            this.lat = loc[1];
-            this.heading = loc[2];
+            double h = loc[2];
+            double rad = Math.toRadians(h);
+            // offset to the right of travel direction so opposing lanes don't sit on the centreline
+            double eastM = Math.cos(rad) * laneOffsetM;
+            double northM = -Math.sin(rad) * laneOffsetM;
+            double lat0 = loc[1];
+            this.lat = lat0 + northM / 111_320.0;
+            this.lon = loc[0] + eastM / (111_320.0 * Math.cos(Math.toRadians(lat0)));
+            this.heading = h;
         }
     }
 }

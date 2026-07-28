@@ -38,8 +38,8 @@ const INITIAL_VIEW = {
 };
 
 const CAR_MODEL_LENGTH_M = 4.6; // mesh length in local units (≈ metres)
-const CAR_REAL_SIZE_SCALE = 6; // fixed real-world size: cars grow as you zoom in
-const CAR_MIN_PX = 6; // floor so cars never vanish (stay small dots when zoomed out)
+const CAR_REAL_SIZE_SCALE = 15; // fixed real-world size: cars grow clearly as you zoom in
+const CAR_MIN_PX = 5; // floor so cars stay small dots when zoomed out (never vanish)
 
 // Cars have a fixed real-world metre size (so they're small when zoomed out and only
 // grow as you zoom in), with a modest minimum on-screen size so they never disappear.
@@ -139,7 +139,6 @@ export default function Map3D({
       id: "selection-ring",
       data: selectedVehicleId ? filteredVehicles.filter((v) => v.id === selectedVehicleId) : [],
       getPosition: (d: VehiclePoint) => [d.lon, d.lat, 0],
-      transitions: { getPosition: { duration: 55 } },
       getRadius: 26,
       radiusUnits: "meters",
       radiusMinPixels: 14,
@@ -164,8 +163,6 @@ export default function Map3D({
       sizeScale: carSizeScaleFor(viewState.zoom),
       material: { ambient: 0.5, diffuse: 0.8, shininess: 60, specularColor: [70, 70, 70] },
       pickable: true,
-      // GPU-interpolate position between the ~20 Hz snapshots for smooth 60 FPS motion.
-      transitions: { getPosition: { duration: 55 } },
       onClick: (info) => onSelectVehicle(info.object ? (info.object as VehiclePoint).id : null),
       updateTriggers: {
         getScale: [selectedVehicleId],

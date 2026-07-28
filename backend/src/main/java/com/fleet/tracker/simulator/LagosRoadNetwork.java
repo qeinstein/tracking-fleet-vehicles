@@ -24,7 +24,7 @@ public final class LagosRoadNetwork {
     public static final int EXPRESSWAY = 2;
 
     /** Free-flow speed per road class, km/h. */
-    public static final double[] CLASS_SPEED = {38.0, 62.0, 96.0};
+    public static final double[] CLASS_SPEED = {40.0, 66.0, 112.0};
 
     public static final class Edge {
         public final int a;
